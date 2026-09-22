@@ -152,6 +152,23 @@ impl<'a> SequenceEncoder<'a> {
     }
 }
 
+/// 当问题头部超出 `head_max_len` 时收缩各选项的 token 列表，并返回留给问题文本
+/// 的预算（不会小于零）。
+fn fit_options(option_token_ids: &mut [Vec<i32>], head_max_len: usize) -> usize {
+    let total_tokens: usize = option_token_ids.iter().map(Vec::len).sum();
+    let mut token_budget = head_max_len as isize - total_tokens as isize;
+    if token_budget < OPTION_BUDGET_MIN as isize {
+        let tokens_per_option = OPTION_TOKENS_MIN
+            .max(head_max_len.saturating_sub(OPTION_BUDGET_MIN) / option_token_ids.len().max(1));
+        for token_ids in option_token_ids.iter_mut() {
+            token_ids.truncate(tokens_per_option);
+        }
+        let total_tokens: usize = option_token_ids.iter().map(Vec::len).sum();
+        token_budget = head_max_len as isize - total_tokens as isize;
+    }
+    token_budget.max(0) as usize
+}
+
 /// 一条分词后的问题序列，以及各选项 marker 的位置。
 pub(crate) struct Sequence {
     pub(crate) token_ids: Vec<i32>,
@@ -290,18 +307,6 @@ impl Question {
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum Criteria {
-    /// 标签 -> 可选描述（保序）。
-    Choice(Vec<(String, Option<Value>)>),
-    /// 有序的分数等级。
-    Score(Vec<Value>),
-    Noul {
-        false_criterion: Option<Value>,
-        true_criterion: Option<Value>,
-    },
-}
-
 /// 问题原语。其判别值同时用作类型 embedding 的索引。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
@@ -322,6 +327,19 @@ impl QuestionType {
             QuestionType::Noul => "noul",
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum Criteria {
+    /// 标签 -> 可选描述（保序）。
+    Choice(Vec<(String, Option<Value>)>),
+    /// 有序的分数等级。
+    Score(Vec<Value>),
+    /// 布尔判定；`false` / `true` 为可选描述。
+    Noul {
+        false_criterion: Option<Value>,
+        true_criterion: Option<Value>,
+    },
 }
 
 /// 参考实现在把 criteria 与 state 嵌入 prompt 时所依赖的 Python 值格式化语义。
@@ -369,21 +387,4 @@ mod python {
             ),
         }
     }
-}
-
-/// 当问题头部超出 `head_max_len` 时收缩各选项的 token 列表，并返回留给问题文本
-/// 的预算（不会小于零）。
-fn fit_options(option_token_ids: &mut [Vec<i32>], head_max_len: usize) -> usize {
-    let total_tokens: usize = option_token_ids.iter().map(Vec::len).sum();
-    let mut token_budget = head_max_len as isize - total_tokens as isize;
-    if token_budget < OPTION_BUDGET_MIN as isize {
-        let tokens_per_option = OPTION_TOKENS_MIN
-            .max(head_max_len.saturating_sub(OPTION_BUDGET_MIN) / option_token_ids.len().max(1));
-        for token_ids in option_token_ids.iter_mut() {
-            token_ids.truncate(tokens_per_option);
-        }
-        let total_tokens: usize = option_token_ids.iter().map(Vec::len).sum();
-        token_budget = head_max_len as isize - total_tokens as isize;
-    }
-    token_budget.max(0) as usize
 }
