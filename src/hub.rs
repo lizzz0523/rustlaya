@@ -20,13 +20,13 @@ pub(crate) fn resolve_model(model: &str) -> anyhow::Result<ModelPaths> {
         return Ok(ModelPaths::from_directory(Path::new(model)));
     }
 
-    let revision = env::var("LAYA_REVISION").unwrap_or_else(|_| DEFAULT_REVISION.to_string());
-    let client = HFClientSync::new().context("creating Hugging Face client")?;
     let (owner, name) = split_id(model);
-    let repository = client.model(owner, name);
+    let client = HFClientSync::new().context("creating Hugging Face client")?;
+    let repos = client.model(owner, name);
 
+    let revision = env::var("LAYA_REVISION").unwrap_or_else(|_| DEFAULT_REVISION.to_string());
     // 只下载英文检查点文件（跳过 multilingual/、typed-decisions/、assets/）。
-    let snapshot_directory = repository
+    let snapshot_directory = repos
         .snapshot_download()
         .revision(revision.clone())
         .allow_patterns(
