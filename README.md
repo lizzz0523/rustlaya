@@ -4,7 +4,7 @@
 原生 **candle**（Metal 后端）推理。输入一个状态（state）和一组类型化问题
 （`choice`、`score`、`noul`），一次前向传播即可返回经过校准的答案。
 
-本 crate 移植自官方 Python 运行时 [`laya`](https://pypi.org/project/laya/) 以及 MLX
+本 crate 移植自官方 Python 运行时 [`laya`](https://github.com/NandhaKishorM/laya) 以及 MLX
 参考实现 [`laya_mlx`](https://github.com/mizorewww/laya-mlx)。
 
 ## 架构
@@ -88,7 +88,7 @@ let result = laya.predict(&state, &questions)?; // -> Response (Serialize)
 
 ## 与 Python 参考实现的一致性
 
-行为标准是官方 [`laya`](https://pypi.org/project/laya/) 0.3.5 包
+行为标准是官方 [`laya`](https://github.com/NandhaKishorM/laya) 0.3.5 版
 （`laya/agent.py`、`laya/common.py`）。
 
 刻意对齐的点：
