@@ -14,7 +14,7 @@ const DEFAULT_REVISION: &str = "c5d78730f3493e4fe16d61507ef4b78eef7318cf";
 /// 若 `model` 是已存在的目录则直接使用；否则按 Hugging Face 仓库 id 处理，
 /// 下载（或复用缓存）所需文件。
 ///
-/// `LAYA_REVISION` 可覆盖固定的版本号。
+/// `LAYA_REVISION` 可覆盖版本号；官方仓库缺省用固定 commit，其他仓库缺省用 `main`。
 pub(crate) fn resolve_model(model: &str) -> anyhow::Result<ModelPaths> {
     if Path::new(model).is_dir() {
         return Ok(ModelPaths::from_directory(Path::new(model)));
@@ -24,8 +24,15 @@ pub(crate) fn resolve_model(model: &str) -> anyhow::Result<ModelPaths> {
     let client = HFClientSync::new().context("creating Hugging Face client")?;
     let repos = client.model(owner, name);
 
-    let revision = env::var("LAYA_REVISION").unwrap_or_else(|_| DEFAULT_REVISION.to_string());
-    // 只下载英文检查点文件（跳过 multilingual/、typed-decisions/、assets/）。
+    // 固定版本号只适用于官方英文仓库；其他仓库（如多语言仓库）跟随默认分支。
+    let default_revision = if model == DEFAULT_REPOSITORY {
+        DEFAULT_REVISION
+    } else {
+        "main"
+    };
+    let revision = env::var("LAYA_REVISION").unwrap_or_else(|_| default_revision.to_string());
+    // 只取仓库根目录的检查点文件：官方仓库根目录是英文版，跳过 multilingual/、
+    // typed-decisions/、assets/；独立的多语言镜像仓库根目录即为所需文件。
     let snapshot_directory = repos
         .snapshot_download()
         .revision(revision.clone())

@@ -33,8 +33,11 @@ src/
 ## 用法
 
 ```bash
-# CLI 示例（模型由 LAYA_MODEL 指定：本地目录或 Hugging Face 仓库 id；缺省为官方仓库）
+# 英文 CLI 示例（模型由 LAYA_MODEL 指定：本地目录或 Hugging Face 仓库 id；缺省为官方仓库）
 cargo run --example demo
+
+# 中文 CLI 示例（缺省使用多语言检查点 convaiinnovations/laya-multilingual）
+cargo run --example demo_zh
 ```
 
 ```rust
@@ -111,5 +114,5 @@ let result = laya.predict(&state, &questions)?; // -> Response (Serialize)
 | 变量 | 作用 |
 |---|---|
 | `LAYA_MODEL` | 示例程序的默认检查点（目录或仓库 id） |
-| `LAYA_REVISION` | 固定 Hugging Face 版本号 |
+| `LAYA_REVISION` | 覆盖 Hugging Face 版本号（缺省：官方仓库用固定 commit，其他仓库用 `main`） |
 | `LAYA_DEBUG` | 把每个问题的 logits 打印到 stderr |
