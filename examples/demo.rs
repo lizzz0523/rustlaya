@@ -4,8 +4,8 @@ use std::env;
 use std::time;
 
 use anyhow::Context;
-use serde_json::json;
 use rustlaya::{Criteria, DEFAULT_REPOSITORY, Laya, Question, QuestionType};
+use serde_json::json;
 
 fn main() -> anyhow::Result<()> {
     // 本地目录或 Hugging Face 仓库 id；由 `LAYA_MODEL` 指定，缺省用官方仓库。

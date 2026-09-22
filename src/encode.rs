@@ -37,6 +37,7 @@ pub(crate) fn build_sequences(
     }
 
     let encoder = SequenceEncoder::new(tokenizer, special_tokens);
+
     let mut sequences = Vec::with_capacity(questions.len());
     for question in questions {
         let sequence = encoder.build_sequence(state, question, max_len, head_max_len)?;
@@ -48,6 +49,7 @@ pub(crate) fn build_sequences(
         }
         sequences.push(sequence);
     }
+
     Ok(sequences)
 }
 
@@ -76,17 +78,21 @@ impl<'a> SequenceEncoder<'a> {
             markers,
             question_type,
         } = self.prefix_sequence(question, head_max_len)?;
+
         let room = max_len.saturating_sub(token_ids.len()).saturating_sub(1);
         let state_text = python::to_text(state).replace(&self.special.mask_token, " ");
         let mut state_token_ids = self.encode(&state_text)?;
         state_token_ids.truncate(room);
+
         token_ids.extend(state_token_ids);
         token_ids.push(self.special.sep_token_id as i32);
         token_ids.truncate(max_len);
+
         let markers = markers
             .into_iter()
             .filter(|&marker| marker < max_len as i32)
             .collect();
+
         Ok(Sequence {
             token_ids,
             markers,
@@ -131,7 +137,9 @@ impl<'a> SequenceEncoder<'a> {
             markers.push(token_ids.len() as i32);
             token_ids.extend_from_slice(option);
         }
+
         token_ids.push(self.special.sep_token_id as i32);
+
         Ok(Sequence {
             token_ids,
             markers,
@@ -156,6 +164,7 @@ impl<'a> SequenceEncoder<'a> {
 /// 的预算（不会小于零）。
 fn fit_options(option_token_ids: &mut [Vec<i32>], head_max_len: usize) -> usize {
     let total_tokens: usize = option_token_ids.iter().map(Vec::len).sum();
+
     let mut token_budget = head_max_len as isize - total_tokens as isize;
     if token_budget < OPTION_BUDGET_MIN as isize {
         let tokens_per_option = OPTION_TOKENS_MIN
@@ -166,6 +175,7 @@ fn fit_options(option_token_ids: &mut [Vec<i32>], head_max_len: usize) -> usize 
         let total_tokens: usize = option_token_ids.iter().map(Vec::len).sum();
         token_budget = head_max_len as isize - total_tokens as isize;
     }
+
     token_budget.max(0) as usize
 }
 

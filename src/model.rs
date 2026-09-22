@@ -263,187 +263,6 @@ impl ModernBert {
 }
 
 // ---------------------------------------------------------------------------
-// 决策头、打分头与动作头
-// ---------------------------------------------------------------------------
-
-struct DecisionHead {
-    layers: Vec<HeadLayer>,
-}
-
-impl DecisionHead {
-    fn load(
-        var_builder: VarBuilder,
-        config: &EncoderConfig,
-        head_layers: usize,
-    ) -> anyhow::Result<Self> {
-        let mut layers = Vec::with_capacity(head_layers);
-        for index in 0..head_layers {
-            layers.push(HeadLayer::load(
-                var_builder.pp(format!("layers.{index}")),
-                config,
-            )?);
-        }
-        Ok(Self { layers })
-    }
-
-    fn forward(&self, hidden_states: &Tensor, mask: &Tensor) -> anyhow::Result<Tensor> {
-        let mut hidden = hidden_states.clone();
-        for layer in &self.layers {
-            hidden = layer.forward(&hidden, mask)?;
-        }
-        Ok(hidden)
-    }
-}
-
-struct HeadLayer {
-    self_attention: HeadAttention,
-    norm1: LayerNorm,
-    norm2: LayerNorm,
-    linear1: Linear,
-    linear2: Linear,
-}
-
-impl HeadLayer {
-    fn load(var_builder: VarBuilder, config: &EncoderConfig) -> anyhow::Result<Self> {
-        let head_hidden_size = 4 * config.hidden_size;
-        Ok(Self {
-            self_attention: HeadAttention::load(var_builder.pp("self_attn"), config)?,
-            norm1: layer_norm(
-                config.hidden_size,
-                config.layer_norm_eps,
-                var_builder.pp("norm1"),
-            )?,
-            norm2: layer_norm(
-                config.hidden_size,
-                config.layer_norm_eps,
-                var_builder.pp("norm2"),
-            )?,
-            linear1: linear(
-                config.hidden_size,
-                head_hidden_size,
-                var_builder.pp("linear1"),
-            )?,
-            linear2: linear(
-                head_hidden_size,
-                config.hidden_size,
-                var_builder.pp("linear2"),
-            )?,
-        })
-    }
-
-    fn forward(&self, hidden_states: &Tensor, mask: &Tensor) -> anyhow::Result<Tensor> {
-        let normalized = self.norm1.forward(hidden_states)?;
-        let attention_output = self.self_attention.forward(&normalized, mask)?;
-        let hidden = hidden_states.add(&attention_output)?;
-        let normalized = self.norm2.forward(&hidden)?;
-        let feed_forward = self
-            .linear2
-            .forward(&self.linear1.forward(&normalized)?.relu()?)?;
-        Ok(hidden.add(&feed_forward)?)
-    }
-}
-
-struct HeadAttention {
-    input_projection: Linear,
-    output_projection: Linear,
-    num_heads: usize,
-    head_size: usize,
-}
-
-impl HeadAttention {
-    fn load(var_builder: VarBuilder, config: &EncoderConfig) -> anyhow::Result<Self> {
-        // 决策头的头数与编码器无关：参考实现用 `max(1, hidden_size / 64)`（`common.py`
-        // 的 `nn.TransformerEncoderLayer` 与 `laya_mlx/model.py` 同理）。
-        let num_heads = (config.hidden_size / 64).max(1);
-        if !config.hidden_size.is_multiple_of(num_heads) {
-            anyhow::bail!("decision head hidden size must be divisible by its head count");
-        }
-        Ok(Self {
-            input_projection: linear(
-                config.hidden_size,
-                3 * config.hidden_size,
-                var_builder.pp("in_proj"),
-            )?,
-            output_projection: linear(
-                config.hidden_size,
-                config.hidden_size,
-                var_builder.pp("out_proj"),
-            )?,
-            num_heads,
-            head_size: config.hidden_size / num_heads,
-        })
-    }
-
-    fn forward(&self, hidden_states: &Tensor, mask: &Tensor) -> anyhow::Result<Tensor> {
-        let (query, key, value) = split_query_key_value(
-            &self.input_projection.forward(hidden_states)?,
-            self.num_heads,
-            self.head_size,
-        )?;
-        let scale = (self.head_size as f64).powf(-0.5);
-        let context = scaled_dot_product_attention(&query, &key, &value, mask, scale)?;
-        Ok(self.output_projection.forward(&merge_heads(
-            &context,
-            self.num_heads,
-            self.head_size,
-        )?)?)
-    }
-}
-
-struct Scorer {
-    norm: LayerNorm,
-    linear1: Linear,
-    linear2: Linear,
-}
-
-impl Scorer {
-    fn load(var_builder: VarBuilder, config: &EncoderConfig) -> anyhow::Result<Self> {
-        Ok(Self {
-            norm: layer_norm(
-                config.hidden_size,
-                config.layer_norm_eps,
-                var_builder.pp("norm"),
-            )?,
-            linear1: linear(
-                config.hidden_size,
-                config.hidden_size,
-                var_builder.pp("linear1"),
-            )?,
-            linear2: linear(config.hidden_size, 1, var_builder.pp("linear2"))?,
-        })
-    }
-
-    fn forward(&self, hidden_states: &Tensor) -> anyhow::Result<Tensor> {
-        let hidden = self.norm.forward(hidden_states)?;
-        let hidden = self.linear1.forward(&hidden)?.gelu_erf()?;
-        Ok(self.linear2.forward(&hidden)?)
-    }
-}
-
-struct ActionHead {
-    linear1: Linear,
-    linear2: Linear,
-}
-
-impl ActionHead {
-    fn load(
-        var_builder: VarBuilder,
-        config: &EncoderConfig,
-        num_actions: usize,
-    ) -> anyhow::Result<Self> {
-        Ok(Self {
-            linear1: linear(config.hidden_size + 4, 256, var_builder.pp("linear1"))?,
-            linear2: linear(256, num_actions, var_builder.pp("linear2"))?,
-        })
-    }
-
-    fn forward(&self, hidden_states: &Tensor) -> anyhow::Result<Tensor> {
-        let hidden = self.linear1.forward(hidden_states)?.gelu_erf()?;
-        Ok(self.linear2.forward(&hidden)?)
-    }
-}
-
-// ---------------------------------------------------------------------------
 // 编码器层
 // ---------------------------------------------------------------------------
 
@@ -635,6 +454,187 @@ impl Rotary {
     /// 对 `[batch, heads, seq, head_size]` 张量施加旋转位置 embedding。
     fn apply(&self, hidden_states: &Tensor) -> anyhow::Result<Tensor> {
         Ok(rope(&hidden_states.contiguous()?, &self.cosine, &self.sine)?.contiguous()?)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 决策头、打分头与动作头
+// ---------------------------------------------------------------------------
+
+struct DecisionHead {
+    layers: Vec<HeadLayer>,
+}
+
+impl DecisionHead {
+    fn load(
+        var_builder: VarBuilder,
+        config: &EncoderConfig,
+        head_layers: usize,
+    ) -> anyhow::Result<Self> {
+        let mut layers = Vec::with_capacity(head_layers);
+        for index in 0..head_layers {
+            layers.push(HeadLayer::load(
+                var_builder.pp(format!("layers.{index}")),
+                config,
+            )?);
+        }
+        Ok(Self { layers })
+    }
+
+    fn forward(&self, hidden_states: &Tensor, mask: &Tensor) -> anyhow::Result<Tensor> {
+        let mut hidden = hidden_states.clone();
+        for layer in &self.layers {
+            hidden = layer.forward(&hidden, mask)?;
+        }
+        Ok(hidden)
+    }
+}
+
+struct HeadLayer {
+    self_attention: HeadAttention,
+    norm1: LayerNorm,
+    norm2: LayerNorm,
+    linear1: Linear,
+    linear2: Linear,
+}
+
+impl HeadLayer {
+    fn load(var_builder: VarBuilder, config: &EncoderConfig) -> anyhow::Result<Self> {
+        let head_hidden_size = 4 * config.hidden_size;
+        Ok(Self {
+            self_attention: HeadAttention::load(var_builder.pp("self_attn"), config)?,
+            norm1: layer_norm(
+                config.hidden_size,
+                config.layer_norm_eps,
+                var_builder.pp("norm1"),
+            )?,
+            norm2: layer_norm(
+                config.hidden_size,
+                config.layer_norm_eps,
+                var_builder.pp("norm2"),
+            )?,
+            linear1: linear(
+                config.hidden_size,
+                head_hidden_size,
+                var_builder.pp("linear1"),
+            )?,
+            linear2: linear(
+                head_hidden_size,
+                config.hidden_size,
+                var_builder.pp("linear2"),
+            )?,
+        })
+    }
+
+    fn forward(&self, hidden_states: &Tensor, mask: &Tensor) -> anyhow::Result<Tensor> {
+        let normalized = self.norm1.forward(hidden_states)?;
+        let attention_output = self.self_attention.forward(&normalized, mask)?;
+        let hidden = hidden_states.add(&attention_output)?;
+        let normalized = self.norm2.forward(&hidden)?;
+        let feed_forward = self
+            .linear2
+            .forward(&self.linear1.forward(&normalized)?.relu()?)?;
+        Ok(hidden.add(&feed_forward)?)
+    }
+}
+
+struct HeadAttention {
+    input_projection: Linear,
+    output_projection: Linear,
+    num_heads: usize,
+    head_size: usize,
+}
+
+impl HeadAttention {
+    fn load(var_builder: VarBuilder, config: &EncoderConfig) -> anyhow::Result<Self> {
+        // 决策头的头数与编码器无关：参考实现用 `max(1, hidden_size / 64)`（`common.py`
+        // 的 `nn.TransformerEncoderLayer` 与 `laya_mlx/model.py` 同理）。
+        let num_heads = (config.hidden_size / 64).max(1);
+        if !config.hidden_size.is_multiple_of(num_heads) {
+            anyhow::bail!("decision head hidden size must be divisible by its head count");
+        }
+        Ok(Self {
+            input_projection: linear(
+                config.hidden_size,
+                3 * config.hidden_size,
+                var_builder.pp("in_proj"),
+            )?,
+            output_projection: linear(
+                config.hidden_size,
+                config.hidden_size,
+                var_builder.pp("out_proj"),
+            )?,
+            num_heads,
+            head_size: config.hidden_size / num_heads,
+        })
+    }
+
+    fn forward(&self, hidden_states: &Tensor, mask: &Tensor) -> anyhow::Result<Tensor> {
+        let (query, key, value) = split_query_key_value(
+            &self.input_projection.forward(hidden_states)?,
+            self.num_heads,
+            self.head_size,
+        )?;
+        let scale = (self.head_size as f64).powf(-0.5);
+        let context = scaled_dot_product_attention(&query, &key, &value, mask, scale)?;
+        Ok(self.output_projection.forward(&merge_heads(
+            &context,
+            self.num_heads,
+            self.head_size,
+        )?)?)
+    }
+}
+
+struct Scorer {
+    norm: LayerNorm,
+    linear1: Linear,
+    linear2: Linear,
+}
+
+impl Scorer {
+    fn load(var_builder: VarBuilder, config: &EncoderConfig) -> anyhow::Result<Self> {
+        Ok(Self {
+            norm: layer_norm(
+                config.hidden_size,
+                config.layer_norm_eps,
+                var_builder.pp("norm"),
+            )?,
+            linear1: linear(
+                config.hidden_size,
+                config.hidden_size,
+                var_builder.pp("linear1"),
+            )?,
+            linear2: linear(config.hidden_size, 1, var_builder.pp("linear2"))?,
+        })
+    }
+
+    fn forward(&self, hidden_states: &Tensor) -> anyhow::Result<Tensor> {
+        let hidden = self.norm.forward(hidden_states)?;
+        let hidden = self.linear1.forward(&hidden)?.gelu_erf()?;
+        Ok(self.linear2.forward(&hidden)?)
+    }
+}
+
+struct ActionHead {
+    linear1: Linear,
+    linear2: Linear,
+}
+
+impl ActionHead {
+    fn load(
+        var_builder: VarBuilder,
+        config: &EncoderConfig,
+        num_actions: usize,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            linear1: linear(config.hidden_size + 4, 256, var_builder.pp("linear1"))?,
+            linear2: linear(256, num_actions, var_builder.pp("linear2"))?,
+        })
+    }
+
+    fn forward(&self, hidden_states: &Tensor) -> anyhow::Result<Tensor> {
+        let hidden = self.linear1.forward(hidden_states)?.gelu_erf()?;
+        Ok(self.linear2.forward(&hidden)?)
     }
 }
 

@@ -46,8 +46,9 @@ pub(crate) fn build_response(
             question.question_type,
             num_options,
         );
-        let raw_logits = &logits[row * num_markers..row * num_markers + num_options];
-        let scaled = raw_logits
+
+        let row_logits = &logits[row * num_markers..row * num_markers + num_options];
+        let scaled = row_logits
             .iter()
             .map(|&logit| logit / temperature)
             .collect::<Vec<_>>();
@@ -56,17 +57,17 @@ pub(crate) fn build_response(
         if debug {
             eprintln!(
                 "{}: options={num_options} length={} markers={:?} \
-                 temperature={temperature} logits={raw_logits:?}",
+                 temperature={temperature} logits={row_logits:?}",
                 question.id,
                 sequence.token_ids.len(),
                 sequence.markers
             );
         }
 
-        let action = action_answer(
-            &action_logits[row * action_stride..row * action_stride + action_stride],
-        );
+        let action =
+            action_answer(&action_logits[row * action_stride..row * action_stride + action_stride]);
         let answer = decode_answer(question, &probabilities, action);
+
         answers.insert(question.id.clone(), answer);
     }
 
@@ -215,22 +216,9 @@ fn temperature(
     let bucket = temperature_bucket(question_type, num_options);
     let raw = match by_options.get(&bucket) {
         Some(temperature) => *temperature,
-        None => by_type
-            .get(question_type as usize)
-            .copied()
-            .unwrap_or(1.0),
+        None => by_type.get(question_type as usize).copied().unwrap_or(1.0),
     };
     clamp_temperature(raw)
-}
-
-/// 参考 `common.py::clamp_temperature`：把拟合温度限制在 `[0.5, 5.0]`，
-/// 非有限值回落到 `1.0`。低于 1 的温度会锐化 logits，导致置信度虚高。
-fn clamp_temperature(value: f32) -> f32 {
-    if value.is_finite() {
-        value.clamp(0.5, 5.0)
-    } else {
-        1.0
-    }
 }
 
 /// 校准分桶，例如 `choice:3-5`、`noul:2`。
@@ -245,6 +233,16 @@ fn temperature_bucket(question_type: QuestionType, num_options: usize) -> String
         "11+"
     };
     format!("{}:{}", question_type.as_str(), size)
+}
+
+/// 参考 `common.py::clamp_temperature`：把拟合温度限制在 `[0.5, 5.0]`，
+/// 非有限值回落到 `1.0`。低于 1 的温度会锐化 logits，导致置信度虚高。
+fn clamp_temperature(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.5, 5.0)
+    } else {
+        1.0
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
