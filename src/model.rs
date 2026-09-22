@@ -159,10 +159,12 @@ impl DecisionModel {
         let num_options = probabilities.dim(1)?;
         let (sorted, _) = probabilities.contiguous()?.sort_last_dim(true)?;
         let top_probability = sorted.narrow(D::Minus1, num_options - 1, 1)?;
+        // 单选项问题时，参考实现缺省的第二个槽取 0，于是 `top1 - top2 == top1`（≈1.0），
+        // 而非 `top1 - top1 == 0`。`Batch::collate` 也会补出空槽，此处保持一致以防万一。
         let second_probability = if num_options >= 2 {
             sorted.narrow(D::Minus1, num_options - 2, 1)?
         } else {
-            top_probability.clone()
+            Tensor::zeros_like(&top_probability)?
         };
 
         let features = Tensor::cat(
@@ -350,6 +352,12 @@ struct HeadAttention {
 
 impl HeadAttention {
     fn load(var_builder: VarBuilder, config: &EncoderConfig) -> anyhow::Result<Self> {
+        // 决策头的头数与编码器无关：参考实现用 `max(1, hidden_size / 64)`（`common.py`
+        // 的 `nn.TransformerEncoderLayer` 与 `laya_mlx/model.py` 同理）。
+        let num_heads = (config.hidden_size / 64).max(1);
+        if !config.hidden_size.is_multiple_of(num_heads) {
+            anyhow::bail!("decision head hidden size must be divisible by its head count");
+        }
         Ok(Self {
             input_projection: linear(
                 config.hidden_size,
@@ -361,8 +369,8 @@ impl HeadAttention {
                 config.hidden_size,
                 var_builder.pp("out_proj"),
             )?,
-            num_heads: config.num_attention_heads,
-            head_size: config.head_size(),
+            num_heads,
+            head_size: config.hidden_size / num_heads,
         })
     }
 
@@ -839,12 +847,14 @@ impl Batch {
             .max()
             .unwrap_or(1)
             .max(1);
+        // 至少两个 marker 槽位：参考实现（官方 `common.py` 与 MLX 运行时）都会为单选项
+        // 问题补一个空槽，使动作头的 `top1 - top2` 等于 `top1`（≈1.0）而非 0。
         let num_markers = sequences
             .iter()
             .map(|sequence| sequence.markers.len())
             .max()
             .unwrap_or(1)
-            .max(1);
+            .max(2);
 
         let mut input_token_ids = vec![pad_token_id; batch_size * sequence_length];
         let mut attention = vec![0u32; batch_size * sequence_length];

@@ -95,7 +95,8 @@ let result = laya.predict(&state, &questions)?; // -> Response (Serialize)
 - 温度按 `clamp_temperature` 裁剪到 `[0.5, 5.0]`。
 - 输出 schema 与 `Agent.system_one` 一致：`model` 为 `"laya-rl-agent"`，每个答案
   都带 `action.act_probability`，`noul` 也报告 `confidence`。
-- 动作头消费 top-2 概率、熵与 `k/255` 特征，与 `common.py` 完全一致。
+- 动作头消费 top-2 概率、熵与 `k/255` 特征，与 `common.py` 一致；单选项批次的空槽补位
+  语义（第二个 top-2 槽取 0，使 `top1 - top2 == top1`）也与参考实现对齐。
 - 编码器使用与参考实现相同的全局/滑动窗口交替注意力，以及按层类型的 RoPE base。
 
 已知偏差：
