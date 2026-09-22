@@ -11,7 +11,7 @@
 
 ```
 src/
-  lib.rs      Laya 门面：load() + predict()，仅做串联
+  lib.rs      Laya 门面 + agent 配置（InferenceConfig）：load() + predict()，仅做串联
   hub.rs      把本地目录或 Hugging Face 仓库解析为文件路径
   encode.rs   输入侧：QuestionType/Question/Criteria、Python 兼容渲染、特殊 token 与分词后的序列（不含张量）
   model.rs    candle 网络：ModernBERT 编码器 + 决策头 + 打分头 + 动作头，检查点加载/重映射，以及批处理

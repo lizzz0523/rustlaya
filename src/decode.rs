@@ -1,4 +1,4 @@
-//! 输出侧：推理配置、校准数学与类型化结果文档。
+//! 输出侧：校准数学与类型化结果文档。
 //!
 //! 解码刻意与后端无关：它只消费主机端的 `f32` 切片，并集中负责所有
 //! softmax / 温度裁剪 / 熵 / 舍入决策，因此实现只有一份。
@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use indexmap::IndexMap;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::encode::{Criteria, Question, QuestionType, Sequence};
@@ -19,18 +19,20 @@ type OrderedMap<V> = IndexMap<String, V>;
 /// 构建类型化答案并包装成结果文档。
 ///
 /// `logits` 形状为 `[batch, num_markers]`，`action_logits` 形状为
-/// `[batch, num_actions]`，二者均为行主序。
+/// `[batch, action_stride]`，二者均为行主序。温度表按引用传入，decode 因此
+/// 不需要依赖配置类型本身。
 pub(crate) fn build_response(
-    config: &InferenceConfig,
     questions: &[Question],
     sequences: &[Sequence],
     logits: &[f32],
     action_logits: &[f32],
     num_markers: usize,
     input_tokens: i32,
+    action_stride: usize,
+    temperature_by_type: &[f32],
+    temperature_by_options: &HashMap<String, f32>,
 ) -> Response {
     let debug = std::env::var("LAYA_DEBUG").is_ok();
-    let action_stride = config.num_actions();
     let mut answers = OrderedMap::new();
 
     for (row, question) in questions.iter().enumerate() {
@@ -38,7 +40,12 @@ pub(crate) fn build_response(
         let num_options = sequence.markers.len();
 
         // 对本问题的选项 logits 做温度校准后的 softmax。
-        let temperature = config.temperature(question.question_type, num_options);
+        let temperature = temperature(
+            temperature_by_type,
+            temperature_by_options,
+            question.question_type,
+            num_options,
+        );
         let raw_logits = &logits[row * num_markers..row * num_markers + num_options];
         let scaled = raw_logits
             .iter()
@@ -197,42 +204,23 @@ fn argmax(values: &[f32]) -> usize {
     best
 }
 
-/// `rl_agent_config.json`。
-#[derive(Clone, Debug, Deserialize)]
-pub(crate) struct InferenceConfig {
-    pub(crate) head_layers: usize,
-    pub(crate) max_len: usize,
-    pub(crate) head_max_len: usize,
-    #[serde(default = "default_precision")]
-    pub(crate) amp_dtype: String,
-    #[serde(default)]
-    temperature: Vec<f32>,
-    #[serde(default)]
-    temperature_by_options: HashMap<String, f32>,
-    /// 命名的 RL 动作；只需其数量决定动作头的输出维度（索引 0 是空操作的 answer）。
-    #[serde(default)]
-    act_costs: OrderedMap<f32>,
-}
-
-impl InferenceConfig {
-    /// 某问题类型在拥有 `num_options` 个选项时的后验温度，已按参考实现裁剪。
-    fn temperature(&self, question_type: QuestionType, num_options: usize) -> f32 {
-        let bucket = temperature_bucket(question_type, num_options);
-        let raw = match self.temperature_by_options.get(&bucket) {
-            Some(temperature) => *temperature,
-            None => self
-                .temperature
-                .get(question_type as usize)
-                .copied()
-                .unwrap_or(1.0),
-        };
-        clamp_temperature(raw)
-    }
-
-    /// 动作头输出的 logits 数量。
-    pub(crate) fn num_actions(&self) -> usize {
-        self.act_costs.len() + 1
-    }
+/// 某问题类型在拥有 `num_options` 个选项时的后验温度，已按参考实现裁剪。
+/// 温度属于校准数学，因此实现留在 decode 侧，只接收两张温度表。
+fn temperature(
+    by_type: &[f32],
+    by_options: &HashMap<String, f32>,
+    question_type: QuestionType,
+    num_options: usize,
+) -> f32 {
+    let bucket = temperature_bucket(question_type, num_options);
+    let raw = match by_options.get(&bucket) {
+        Some(temperature) => *temperature,
+        None => by_type
+            .get(question_type as usize)
+            .copied()
+            .unwrap_or(1.0),
+    };
+    clamp_temperature(raw)
 }
 
 /// 参考 `common.py::clamp_temperature`：把拟合温度限制在 `[0.5, 5.0]`，
@@ -257,10 +245,6 @@ fn temperature_bucket(question_type: QuestionType, num_options: usize) -> String
         "11+"
     };
     format!("{}:{}", question_type.as_str(), size)
-}
-
-fn default_precision() -> String {
-    "fp16".to_string()
 }
 
 #[derive(Clone, Debug, Serialize)]

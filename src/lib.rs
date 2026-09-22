@@ -9,6 +9,9 @@
 //! - [`model`] —— candle 网络与检查点加载。
 //! - [`decode`] —— 输出侧：校准数学与类型化结果文档，不含张量后端。
 //!
+//! 此外，crate 根持有 agent 配置 `InferenceConfig`（`rl_agent_config.json`），
+//! 供门面装配与 decode 校准共用。
+//!
 //! [`Laya`] 是唯一入口，负责把三者串联起来。
 //!
 //! [candle]: https://github.com/huggingface/candle
@@ -18,11 +21,14 @@ mod encode;
 mod hub;
 mod model;
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, anyhow};
 use candle_core::Device;
+use indexmap::IndexMap;
+use serde::Deserialize;
 use serde_json::Value;
 use tokenizers::Tokenizer;
 
@@ -31,7 +37,6 @@ pub use decode::{ActionAnswer, Answer, Response, Usage};
 pub use encode::{Criteria, Question, QuestionType};
 pub use hub::DEFAULT_REPOSITORY;
 
-use decode::InferenceConfig;
 use encode::{SpecialTokens, TokenizerConfig};
 use model::{Batch, DecisionModel, EncoderConfig};
 
@@ -109,15 +114,45 @@ impl Laya {
         let action_logits = to_host_f32(&action_logits)?;
 
         Ok(decode::build_response(
-            &self.config,
             questions,
             &sequences,
             &logits,
             &action_logits,
             batch.num_markers,
             batch.input_token_count,
+            self.config.num_actions(),
+            &self.config.temperature,
+            &self.config.temperature_by_options,
         ))
     }
+}
+
+/// `rl_agent_config.json`。
+#[derive(Clone, Debug, Deserialize)]
+struct InferenceConfig {
+    head_layers: usize,
+    max_len: usize,
+    head_max_len: usize,
+    #[serde(default = "default_precision")]
+    amp_dtype: String,
+    #[serde(default)]
+    temperature: Vec<f32>,
+    #[serde(default)]
+    temperature_by_options: HashMap<String, f32>,
+    /// 命名的 RL 动作；只需其数量决定动作头的输出维度（索引 0 是空操作的 answer）。
+    #[serde(default)]
+    act_costs: IndexMap<String, f32>,
+}
+
+impl InferenceConfig {
+    /// 动作头输出的 logits 数量。
+    fn num_actions(&self) -> usize {
+        self.act_costs.len() + 1
+    }
+}
+
+fn default_precision() -> String {
+    "fp16".to_string()
 }
 
 /// 读取并反序列化一个 JSON 文件，出错时补上文件路径。
