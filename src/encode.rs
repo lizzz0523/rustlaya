@@ -176,6 +176,21 @@ pub(crate) struct Sequence {
     pub(crate) question_type: i32,
 }
 
+/// `tokenizer/tokenizer_config.json`：我们所需解析的特殊 token 条目。
+///
+/// 其余字段（如 `model_max_length`、`tokenizer_class`）用不到，会被忽略。
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct TokenizerConfig {
+    #[serde(default)]
+    cls_token: Option<SpecialToken>,
+    #[serde(default)]
+    sep_token: Option<SpecialToken>,
+    #[serde(default)]
+    pad_token: Option<SpecialToken>,
+    #[serde(default)]
+    mask_token: Option<SpecialToken>,
+}
+
 /// 从 [`TokenizerConfig`] 解析出的特殊 token。
 #[derive(Clone, Debug)]
 pub(crate) struct SpecialTokens {
@@ -208,21 +223,6 @@ impl SpecialTokens {
             mask_token_id: id_of(&config.mask_token, "mask_token")?,
         })
     }
-}
-
-/// `tokenizer/tokenizer_config.json`：我们所需解析的特殊 token 条目。
-///
-/// 其余字段（如 `model_max_length`、`tokenizer_class`）用不到，会被忽略。
-#[derive(Clone, Debug, Deserialize)]
-pub(crate) struct TokenizerConfig {
-    #[serde(default)]
-    cls_token: Option<SpecialToken>,
-    #[serde(default)]
-    sep_token: Option<SpecialToken>,
-    #[serde(default)]
-    pad_token: Option<SpecialToken>,
-    #[serde(default)]
-    mask_token: Option<SpecialToken>,
 }
 
 /// 特殊 token 既可能是普通字符串，也可能是带 `content` 字段的 added-token
