@@ -192,8 +192,6 @@ struct ModernBert {
     embeddings: Embeddings,
     local_attention: usize,
     layers: Vec<EncoderLayer>,
-    /// 每层是否使用全局注意力（而非滑动窗口）。
-    global_layers: Vec<bool>,
     final_norm: LayerNorm,
 }
 
@@ -214,11 +212,9 @@ impl ModernBert {
             var_builder.device(),
         )?;
 
-        let global_layers: Vec<bool> = (0..config.num_hidden_layers)
-            .map(|index| config.layer_is_global(index))
-            .collect();
         let mut layers = Vec::with_capacity(config.num_hidden_layers);
-        for (index, &is_global) in global_layers.iter().enumerate() {
+        for index in 0..config.num_hidden_layers {
+            let is_global = config.layer_is_global(index);
             let rotary = if is_global {
                 global_rotary.clone()
             } else {
@@ -228,6 +224,7 @@ impl ModernBert {
                 var_builder.pp(format!("layers.{index}")),
                 config,
                 rotary,
+                is_global,
             )?);
         }
 
@@ -241,7 +238,6 @@ impl ModernBert {
             embeddings,
             local_attention: config.local_attention,
             layers,
-            global_layers,
             final_norm,
         })
     }
@@ -251,8 +247,8 @@ impl ModernBert {
         let (global_mask, sliding_mask) =
             build_attention_masks(valid, self.local_attention, hidden.dtype())?;
 
-        for (layer, &is_global) in self.layers.iter().zip(&self.global_layers) {
-            let mask = if is_global {
+        for layer in &self.layers {
+            let mask = if layer.is_global {
                 &global_mask
             } else {
                 &sliding_mask
@@ -448,6 +444,8 @@ struct EncoderLayer {
     attention: EncoderAttention,
     mlp_norm: LayerNorm,
     mlp: EncoderMlp,
+    /// 是否使用全（全局）注意力（而非滑动窗口）；决定 forward 时选用哪种掩码。
+    is_global: bool,
 }
 
 impl EncoderLayer {
@@ -455,6 +453,7 @@ impl EncoderLayer {
         var_builder: VarBuilder,
         config: &EncoderConfig,
         rotary: Rotary,
+        is_global: bool,
     ) -> anyhow::Result<Self> {
         // 检查点中第 0 层没有 attention norm。
         let attention_norm = if var_builder.contains_tensor("attn_norm.weight") {
@@ -475,6 +474,7 @@ impl EncoderLayer {
                 var_builder.pp("mlp_norm"),
             )?,
             mlp: EncoderMlp::load(var_builder.pp("mlp"), config)?,
+            is_global,
         })
     }
 
