@@ -38,7 +38,30 @@ cargo run --example demo
 
 # 中文 CLI 示例（缺省使用多语言检查点 convaiinnovations/laya-multilingual）
 cargo run --example demo_zh
+
+# 交互式终端贪吃蛇（需 TTY；crossterm 仅为示例的开发依赖）
+cargo run --release --example snake -- --model convaiinnovations/laya-multilingual
 ```
+
+### 贪吃蛇示例
+
+移植自 MLX 参考实现的 [`laya_mlx/snake`](https://github.com/mizorewww/laya-mlx/tree/main/laya_mlx/snake)：
+确定性蛇规则 + 哈密顿环安全护盾，Laya 在每个 tick 对同一状态回答
+`move`（choice）、`risk`（noul）、`food`（noul）三类问题，一次前向传播即可决策。
+
+常用选项：
+
+| 选项 | 作用 |
+|---|---|
+| `--model <id\|dir>` | 本地目录或 Hugging Face 仓库 id（缺省 `LAYA_MODEL` → 多语言仓库） |
+| `--prompt compact\|detailed` | 提示词风格（缺省 `compact`） |
+| `--width/--height/--seed/--initial-length` | 棋盘与初始状态 |
+| `--fps <n>` / `--max-speed` | 每秒决策数 / 每次推理后立即移动 |
+| `--steps/--duration` | 停止条件 |
+| `--unassisted` | 直接执行 Laya top-1，关闭安全护盾 |
+| `--no-alt-screen` | 保留最后一帧在终端回滚区 |
+
+运行时按键：`空格` 暂停、`↑/↓` 调整速度、`R` 重开、`Q` 退出。
 
 ```rust
 use serde_json::json;
