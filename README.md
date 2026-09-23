@@ -39,6 +39,9 @@ cargo run --example demo
 # 中文 CLI 示例（缺省使用多语言检查点 convaiinnovations/laya-multilingual）
 cargo run --example demo_zh
 
+# HackerNews 关键字检索（先 BM25 粗筛，再由 Laya 判定相关性）
+cargo run --example hn -- rust
+
 # 交互式终端贪吃蛇（需 TTY；crossterm 仅为示例的开发依赖）
 cargo run --release --example snake -- --model convaiinnovations/laya-multilingual
 ```

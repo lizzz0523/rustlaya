@@ -2931,9 +2931,11 @@ dependencies = [
  "crossterm",
  "hf-hub",
  "indexmap",
+ "reqwest",
  "serde",
  "serde_json",
  "tokenizers 0.23.2",
+ "tokio",
 ]
 
 [[package]]
