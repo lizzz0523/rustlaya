@@ -17,8 +17,17 @@ const MIN_SCORE: f64 = 0.5;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut args = env::args().skip(1);
-    let keyword = args.next().unwrap_or_else(|| DEFAULT_KEYWORD.to_string());
+    let args = env::args().skip(1);
+    let mut compact = false;
+    let mut keyword: Option<String> = None;
+    for arg in args {
+        if arg == "--compact" {
+            compact = true;
+        } else {
+            keyword = Some(arg);
+        }
+    }
+    let keyword = keyword.unwrap_or_else(|| DEFAULT_KEYWORD.to_string());
 
     eprintln!("fetching HackerNews new stories");
     let stories = fetch_stories().await?;
@@ -31,12 +40,12 @@ async fn main() -> anyhow::Result<()> {
 
     let hits = search(&laya, &stories, &keyword, MIN_SCORE)?;
     for (rank, (index, score)) in hits.into_iter().enumerate() {
-        println!(
-            "{:02}: [{:.3}]\n{}",
-            rank + 1,
-            score,
-            serde_json::to_string_pretty(&stories[index])?
-        );
+        let content = if compact {
+            stories[index].title.as_deref().unwrap_or_default()
+        } else {
+            &serde_json::to_string_pretty(&stories[index])?
+        };
+        println!("{:02}: [{:.3}] {}", rank + 1, score, content);
     }
 
     Ok(())
