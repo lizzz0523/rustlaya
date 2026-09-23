@@ -37,21 +37,23 @@ pub fn search(
 ) -> Result<Vec<(usize, f64)>> {
     let state = json!({ "keyword": keyword });
 
-    let mut candidates = candidates(stories, keyword, TOP_K_CANDIDATES);
+    let candidates = candidates(stories, keyword, TOP_K_CANDIDATES);
 
-    // 按问题指令长度排序后再切块：使每个 batch 的序列长度尽量同质，减少
-    // `Batch::collate` 按批内最长序列 padding 造成的计算浪费。最终命中按概率
-    // 排序输出，因此这里重排候选顺序不影响结果。
-    candidates.sort_by_key(|&index| {
-        relevant_question(index, &stories[index], keyword)
-            .instructions
-            .len()
-    });
+    // 每个候选只构造一次问题，并按问题指令长度排序后再切块：使每个 batch 的
+    // 序列长度尽量同质，减少 `Batch::collate` 按批内最长序列 padding 造成的
+    // 计算浪费。最终命中按概率排序输出，因此这里重排候选顺序不影响结果。
+    let mut ranked: Vec<(usize, Question)> = candidates
+        .into_iter()
+        .map(|index| (index, relevant_question(index, &stories[index], keyword)))
+        .collect();
+    ranked.sort_by_key(|(_, question)| question.instructions.len());
 
-    if let Some(&first) = candidates.first() {
+    // 拆成一一对应的「story 下标」与「问题」，问题作为连续切片直接用于 predict。
+    let (indices, questions): (Vec<usize>, Vec<Question>) = ranked.into_iter().unzip();
+
+    if let Some(first) = questions.first() {
         WARMED.get_or_init(|| {
-            let question = relevant_question(first, &stories[first], keyword);
-            if let Err(error) = laya.predict(&state, std::slice::from_ref(&question)) {
+            if let Err(error) = laya.predict(&state, std::slice::from_ref(first)) {
                 eprintln!("warmup predict failed: {error:#}");
             }
         });
@@ -59,23 +61,25 @@ pub fn search(
 
     let mut hits = Vec::new();
 
-    for (chunk_index, chunk) in candidates.chunks(BATCH_SIZE).enumerate() {
-        let questions: Vec<Question> = chunk
-            .iter()
-            .map(|&index| relevant_question(index, &stories[index], keyword))
-            .collect();
-
+    for (chunk_index, (question_chunk, index_chunk)) in questions
+        .chunks(BATCH_SIZE)
+        .zip(indices.chunks(BATCH_SIZE))
+        .enumerate()
+    {
         let started = Instant::now();
-        let response = laya
-            .predict(&state, &questions)
-            .with_context(|| format!("predict batch {chunk_index} ({} candidates)", chunk.len()))?;
+        let response = laya.predict(&state, question_chunk).with_context(|| {
+            format!(
+                "predict batch {chunk_index} ({} candidates)",
+                question_chunk.len()
+            )
+        })?;
         eprintln!(
             "predict batch {chunk_index} ({} candidates): {:.1} ms",
-            chunk.len(),
+            question_chunk.len(),
             started.elapsed().as_secs_f64() * 1000.0
         );
 
-        for &index in chunk {
+        for &index in index_chunk {
             if let Some(Answer::Choice { probabilities, .. }) =
                 response.answers.get(&index.to_string())
                 && let Some(&score) = probabilities.get("A")
