@@ -9,8 +9,9 @@ use serde_json::json;
 
 use crate::hn::Story;
 
-/// 每次前向批量打分的 story 数。
-const BATCH_SIZE: usize = 32;
+/// 每次前向批量打分的 story 数。批内会 pad 到最长序列，实测该 workload 下
+/// 小批量（约 4~8）总耗时更优，故取 8。
+const BATCH_SIZE: usize = 8;
 /// 粗筛后最多送给 Laya 的候选数。
 const TOP_K_CANDIDATES: usize = 100;
 /// story 文本送入问题头前的字符上限（head_max_len=192 token，约等于此量级）。
@@ -36,7 +37,16 @@ pub fn search(
 ) -> Result<Vec<(usize, f64)>> {
     let state = json!({ "keyword": keyword });
 
-    let candidates = candidates(stories, keyword, TOP_K_CANDIDATES);
+    let mut candidates = candidates(stories, keyword, TOP_K_CANDIDATES);
+
+    // 按问题指令长度排序后再切块：使每个 batch 的序列长度尽量同质，减少
+    // `Batch::collate` 按批内最长序列 padding 造成的计算浪费。最终命中按概率
+    // 排序输出，因此这里重排候选顺序不影响结果。
+    candidates.sort_by_key(|&index| {
+        relevant_question(index, &stories[index], keyword)
+            .instructions
+            .len()
+    });
 
     if let Some(&first) = candidates.first() {
         WARMED.get_or_init(|| {
