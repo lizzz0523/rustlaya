@@ -54,15 +54,18 @@ impl SnakeGame {
         if initial_length < 2 || initial_length >= capacity {
             bail!("Initial length must be >= 2 and smaller than the board");
         }
+
         let indices = cycle
             .iter()
             .enumerate()
             .map(|(index, cell)| (*cell, index))
             .collect::<HashMap<_, _>>();
         let start = indices[&(width / 2, height / 2)];
+
         let body = (0..initial_length)
             .map(|i| cycle[(start + capacity - i) % capacity])
             .collect::<VecDeque<_>>();
+
         let mut game = Self {
             width,
             height,
@@ -77,6 +80,7 @@ impl SnakeGame {
             random: Random::new(seed as u64),
         };
         game.food = game.spawn_food();
+
         Ok(game)
     }
 
@@ -108,6 +112,7 @@ impl SnakeGame {
         if !self.alive || self.won {
             return Vec::new();
         }
+
         let head_index = self.indices[&self.head()];
         let tail_distance =
             (self.indices[self.body.back().unwrap()] + self.capacity - head_index) % self.capacity;
@@ -115,16 +120,19 @@ impl SnakeGame {
             Some(food) => (self.indices[&food] + self.capacity - head_index) % self.capacity,
             None => self.capacity,
         };
+
         let mut moves = Vec::with_capacity(DIRECTIONS.len());
         for direction in DIRECTIONS {
             let reason = self.legal_reason(direction);
             let legal = reason == "legal";
+
             let target = self.target(direction);
             let advance = (self.indices.get(&target).copied().unwrap_or(head_index)
                 + self.capacity
                 - head_index)
                 % self.capacity;
             let eats = self.food == Some(target);
+
             let mut safe = legal;
             let mut reason = reason;
             if safe && (advance > tail_distance || (advance == tail_distance && eats)) {
@@ -135,6 +143,7 @@ impl SnakeGame {
                 safe = false;
                 reason = "would skip the food on the safe route".to_string();
             }
+
             moves.push(MoveInfo {
                 direction: direction.to_string(),
                 legal,
@@ -144,6 +153,7 @@ impl SnakeGame {
                 eats,
             });
         }
+
         moves
     }
 
@@ -155,10 +165,13 @@ impl SnakeGame {
             .copied()
             .filter(|cell| *cell != head)
             .collect();
+
         let mut visited: HashSet<(i32, i32)> = HashSet::new();
         visited.insert(head);
+
         let mut queue = VecDeque::new();
         queue.push_back(head);
+
         while let Some((x, y)) = queue.pop_front() {
             for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
                 let cell = (x + dx, y + dy);
@@ -172,6 +185,7 @@ impl SnakeGame {
                 }
             }
         }
+
         (
             self.food.is_some_and(|food| visited.contains(&food)),
             visited.len(),
@@ -185,13 +199,16 @@ impl SnakeGame {
         if !DIRECTIONS.contains(&direction) {
             bail!("Unknown direction: {direction}");
         }
+
         let reason = self.legal_reason(direction);
         if reason != "legal" {
             self.alive = false;
             return Ok(false);
         }
+
         let target = self.target(direction);
         self.body.push_front(target);
+
         if self.food == Some(target) {
             self.score += 1;
             if self.body.len() == self.capacity {
@@ -202,7 +219,9 @@ impl SnakeGame {
             }
             return Ok(true);
         }
+
         self.body.pop_back();
+
         Ok(false)
     }
 
@@ -213,6 +232,7 @@ impl SnakeGame {
             .rev()
             .map(|cell| self.indices[cell])
             .collect();
+
         let mut sum = 0usize;
         for pair in indices.windows(2) {
             let distance = (pair[1] + self.capacity - pair[0]) % self.capacity;
@@ -221,6 +241,7 @@ impl SnakeGame {
             }
             sum += distance;
         }
+
         sum < self.capacity
     }
 
@@ -267,10 +288,12 @@ impl SnakeGame {
         if !(0..self.width).contains(&x) || !(0..self.height).contains(&y) {
             return "wall".to_string();
         }
+
         let cell = (x, y);
         if self.body.get(1) == Some(&cell) {
             return "reverse".to_string();
         }
+
         let mut occupied: HashSet<(i32, i32)> = self.body.iter().copied().collect();
         if self.food != Some(cell)
             && let Some(tail) = self.body.back()
@@ -303,6 +326,7 @@ fn hamiltonian_cycle(width: i32, height: i32) -> anyhow::Result<Vec<(i32, i32)>>
         let swapped = hamiltonian_cycle(height, width)?;
         return Ok(swapped.into_iter().map(|(x, y)| (y, x)).collect());
     }
+
     let mut path = vec![(0, 0)];
     for y in 0..height {
         if y % 2 == 0 {
@@ -317,11 +341,13 @@ fn hamiltonian_cycle(width: i32, height: i32) -> anyhow::Result<Vec<(i32, i32)>>
             }
         }
     }
+
     let mut y = height - 1;
     while y > 0 {
         path.push((0, y));
         y -= 1;
     }
+
     Ok(path)
 }
 

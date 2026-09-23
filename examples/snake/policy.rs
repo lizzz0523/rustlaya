@@ -42,13 +42,17 @@ pub struct Decision {
 
 /// 包裹一次 Laya 推理的策略。
 pub struct Policy {
-    pub guarded: bool,
+    guarded: bool,
     prompt: Prompt,
 }
 
 impl Policy {
     pub fn new(guarded: bool, prompt: Prompt) -> Self {
         Self { guarded, prompt }
+    }
+
+    pub fn guarded(&self) -> bool {
+        self.guarded
     }
 
     pub fn decide(&self, game: &SnakeGame, laya: &Laya) -> anyhow::Result<Decision> {
@@ -89,6 +93,7 @@ impl Policy {
                 }
             )
         };
+        let state = Value::String(state);
 
         let criteria = moves
             .iter()
@@ -166,9 +171,8 @@ impl Policy {
             },
         ];
 
-        let state_value = Value::String(state);
         let inference_start = Instant::now();
-        let output = laya.predict(&state_value, &questions)?;
+        let output = laya.predict(&state, &questions)?;
         let inference_ms = inference_start.elapsed().as_secs_f64() * 1000.0;
 
         let answers = &output.answers;

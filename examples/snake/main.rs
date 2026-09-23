@@ -43,7 +43,8 @@ fn run() -> anyhow::Result<()> {
     eprintln!("Loading Laya weights for {model}...");
     let laya = Laya::load(&model)?;
     let policy = Policy::new(!args.unassisted, args.prompt);
-    eprintln!("Model ready on {}.", hardware_name());
+    let hardware = hardware_name();
+    eprintln!("Model ready on {}.", hardware);
 
     let mut warm = SnakeGame::new(
         args.width,
@@ -71,8 +72,8 @@ fn run() -> anyhow::Result<()> {
     let mut total_steps = 0usize;
     let mut deaths = 0usize;
     let mut stats = Stats {
-        hardware: hardware_name(),
-        guarded: policy.guarded,
+        hardware,
+        guarded: policy.guarded(),
         interventions: 0,
         best: 0,
         round: 1,
@@ -139,8 +140,9 @@ fn run() -> anyhow::Result<()> {
         let tick_start = Instant::now();
         let decision = policy.decide(&game, &laya)?;
         calls += 1;
-        inference.push(decision.inference_ms);
         stats.interventions += usize::from(decision.intervened);
+        inference.push(decision.inference_ms);
+
         let shown = Instant::now();
         timestamps.push_back(shown);
         while timestamps.len() > 60 {
@@ -166,10 +168,12 @@ fn run() -> anyhow::Result<()> {
                 std::thread::sleep(Duration::from_secs_f64(remaining));
             }
         }
+
         game.step(&decision.executed)?;
         total_steps += 1;
         stats.best = stats.best.max(game.score());
-        if policy.guarded && game.alive() && !game.cycle_order_valid() {
+
+        if policy.guarded() && game.alive() && !game.cycle_order_valid() {
             bail!("Guarded game broke its cycle-order invariant");
         }
 
@@ -180,6 +184,7 @@ fn run() -> anyhow::Result<()> {
             }
             compose(&game.snapshot(), None, &stats).draw()?;
             std::thread::sleep(Duration::from_secs(1));
+
             stats.round += 1;
             game = SnakeGame::new(
                 args.width,
@@ -203,7 +208,7 @@ fn run() -> anyhow::Result<()> {
         "best_score": stats.best,
         "interventions": stats.interventions,
         "deaths": deaths,
-        "guarded": policy.guarded,
+        "guarded": policy.guarded(),
         "network": "offline",
         "mean_inference_ms": if inference.is_empty() {
             Value::Null
@@ -212,6 +217,7 @@ fn run() -> anyhow::Result<()> {
         },
     });
     println!("{}", serde_json::to_string_pretty(&summary)?);
+
     Ok(())
 }
 
@@ -281,7 +287,6 @@ impl Args {
                 "--max-speed" => args.max_speed = true,
                 "--unassisted" => args.unassisted = true,
                 "--no-alt-screen" => args.no_alt_screen = true,
-                "--optimize" => {}
                 "-h" | "--help" => {
                     print_help();
                     std::process::exit(0);
