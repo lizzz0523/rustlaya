@@ -40,8 +40,8 @@ pub fn search(
 
     let mut hits = Vec::new();
 
-    // 每个请求的 state 只装本批候选，问题按 `stories[position]` 引用；这与 JeV
-    // `rankingPayload` 的形态一致（候选进 state、question 按下标引用）。
+    // 每个请求的 state 只装本批候选，问题按 `stories[position]` 引用：候选正文
+    // 放在 state 里，question 只负责按下标指示要评估哪一条。
     for (batch_index, batch) in candidates.chunks(BATCH_SIZE).enumerate() {
         let state = ranking_state(keyword, batch, stories);
         let questions: Vec<Question> = batch
@@ -195,8 +195,6 @@ fn tokens_of(text: &str) -> Vec<String> {
 }
 
 /// 把一批 story 组装成请求 state：`request` 为关键字，`stories` 为本批候选。
-///
-/// 形态对齐 JeV `rankingPayload` 的 state（候选放进 state，问题按下标引用）。
 fn ranking_state(keyword: &str, batch: &[usize], stories: &[Story]) -> serde_json::Value {
     let candidates: Vec<serde_json::Value> = batch
         .iter()
@@ -217,7 +215,7 @@ fn ranking_state(keyword: &str, batch: &[usize], stories: &[Story]) -> serde_jso
 
 /// 把本批中处于 `position` 的候选包成一个 0-3 四级 `score` 问题。
 ///
-/// 只引用 `stories[position]`，候选正文留在 state 中，与 JeV 的 ranking 问题一致。
+/// 只引用 `stories[position]`，候选正文留在 state 中。
 fn ranking_question(position: usize, index: usize) -> Question {
     Question {
         id: index.to_string(),
