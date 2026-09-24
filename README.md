@@ -44,6 +44,9 @@ cargo run --example hn -- rust
 
 # 交互式终端贪吃蛇（需 TTY；crossterm 仅为示例的开发依赖）
 cargo run --release --example snake -- --model convaiinnovations/laya-multilingual
+
+# 终端版 Generative UI（Laya 作为 Jev，把预置候选组装成 json-render 风格 Spec；需 TTY）
+cargo run --release --example genui -- --model convaiinnovations/laya-multilingual
 ```
 
 ```rust
