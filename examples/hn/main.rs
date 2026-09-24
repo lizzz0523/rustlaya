@@ -12,8 +12,8 @@ use crate::search::search;
 
 /// 未提供关键字参数时的默认查询词。
 const DEFAULT_KEYWORD: &str = "jev model";
-/// 相关性概率阈值，低于该值的 story 会被丢弃。
-const MIN_SCORE: f64 = 0.5;
+/// 相关性分数阈值（0-3 量纲），低于该值的 story 会被丢弃。
+const MIN_SCORE: f64 = 1.6;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

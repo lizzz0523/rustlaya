@@ -9,13 +9,13 @@ use serde_json::json;
 
 use crate::hn::Story;
 
-/// 每次前向批量打分的 story 数。批内会 pad 到最长序列，实测该 workload 下
-/// 小批量（约 4~8）总耗时更优，故取 8。
-const BATCH_SIZE: usize = 8;
+/// 每个请求 state.stories 里放入的候选数。本地检查点 `max_len=512`，问题头约
+/// 占 100 token，整份 state（含本批候选）只能留约 400 token，故批必须很小。
+const BATCH_SIZE: usize = 2;
 /// 粗筛后最多送给 Laya 的候选数。
 const TOP_K_CANDIDATES: usize = 100;
-/// story 文本送入问题头前的字符上限（head_max_len=192 token，约等于此量级）。
-const STORY_TEXT_MAX_CHARS: usize = 512;
+/// 每篇 story 文本写入 state.stories 前的字符上限（约 100 token，保证本批能放进窗口）。
+const STORY_TEXT_MAX_CHARS: usize = 400;
 /// BM25 TF 饱和系数。
 const BM25_K1: f64 = 1.2;
 /// BM25 长度归一系数。
@@ -26,66 +26,54 @@ static WARMED: OnceLock<()> = OnceLock::new();
 
 /// 基于 rustlaya 对 stories 做关键字相关性检索。
 ///
-/// 先用 BM25 词法打分粗筛出 `TOP_K_CANDIDATES` 个候选，再把每篇候选作为
-/// 一个中立键 `choice` 问题（`A` = 相关）批量送 Laya 打分。
-/// 返回 `(story 下标, 相关性概率 0-1)`，仅保留概率 >= `min_score` 的项，按概率降序。
+/// 先用 BM25 词法打分粗筛出 `TOP_K_CANDIDATES` 个候选，再按 `BATCH_SIZE` 分批：
+/// 每批候选写入 state.stories，并把每个候选包成一个 `score` 问题（`Evaluate ONLY
+/// stories[i] ...`，0-3 四级）送 Laya 打分。
+/// 返回 `(story 下标, 相关性分数 0-3)`，仅保留分数 >= `min_score` 的项，按分数降序。
 pub fn search(
     laya: &Laya,
     stories: &[Story],
     keyword: &str,
     min_score: f64,
 ) -> Result<Vec<(usize, f64)>> {
-    let state = json!({ "keyword": keyword });
-
     let candidates = candidates(stories, keyword, TOP_K_CANDIDATES);
-
-    // 每个候选只构造一次问题，并按问题指令长度排序后再切块：使每个 batch 的
-    // 序列长度尽量同质，减少 `Batch::collate` 按批内最长序列 padding 造成的
-    // 计算浪费。最终命中按概率排序输出，因此这里重排候选顺序不影响结果。
-    let mut ranked: Vec<(usize, Question)> = candidates
-        .into_iter()
-        .map(|index| (index, relevant_question(index, &stories[index], keyword)))
-        .collect();
-    ranked.sort_by_key(|(_, question)| question.instructions.len());
-
-    // 拆成一一对应的「story 下标」与「问题」，问题作为连续切片直接用于 predict。
-    let (indices, questions): (Vec<usize>, Vec<Question>) = ranked.into_iter().unzip();
-
-    if let Some(first) = questions.first() {
-        WARMED.get_or_init(|| {
-            if let Err(error) = laya.predict(&state, std::slice::from_ref(first)) {
-                eprintln!("warmup predict failed: {error:#}");
-            }
-        });
-    }
 
     let mut hits = Vec::new();
 
-    for (chunk_index, (question_chunk, index_chunk)) in questions
-        .chunks(BATCH_SIZE)
-        .zip(indices.chunks(BATCH_SIZE))
-        .enumerate()
-    {
+    // 每个请求的 state 只装本批候选，问题按 `stories[position]` 引用；这与 JeV
+    // `rankingPayload` 的形态一致（候选进 state、question 按下标引用）。
+    for (batch_index, batch) in candidates.chunks(BATCH_SIZE).enumerate() {
+        let state = ranking_state(keyword, batch, stories);
+        let questions: Vec<Question> = batch
+            .iter()
+            .enumerate()
+            .map(|(position, &index)| ranking_question(position, index))
+            .collect();
+
+        WARMED.get_or_init(|| {
+            if let Err(error) = laya.predict(&state, std::slice::from_ref(&questions[0])) {
+                eprintln!("warmup predict failed: {error:#}");
+            }
+        });
+
         let started = Instant::now();
-        let response = laya.predict(&state, question_chunk).with_context(|| {
+        let response = laya.predict(&state, &questions).with_context(|| {
             format!(
-                "predict batch {chunk_index} ({} candidates)",
-                question_chunk.len()
+                "predict batch {batch_index} ({} candidates)",
+                questions.len()
             )
         })?;
         eprintln!(
-            "predict batch {chunk_index} ({} candidates): {:.1} ms",
-            question_chunk.len(),
+            "predict batch {batch_index} ({} candidates): {:.1} ms",
+            questions.len(),
             started.elapsed().as_secs_f64() * 1000.0
         );
 
-        for &index in index_chunk {
-            if let Some(Answer::Choice { probabilities, .. }) =
-                response.answers.get(&index.to_string())
-                && let Some(&score) = probabilities.get("A")
-                && score >= min_score
+        for &index in batch {
+            if let Some(Answer::Score { score, .. }) = response.answers.get(&index.to_string())
+                && *score >= min_score
             {
-                hits.push((index, score));
+                hits.push((index, *score));
             }
         }
     }
@@ -211,31 +199,44 @@ fn tokens_of(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// 把一篇 story 包成中立键的 two-option `choice` 问题，`A` 表示相关。
-fn relevant_question(index: usize, story: &Story, keyword: &str) -> Question {
-    let mut instructions =
-        format!("Is the following Hacker News story relevant to the keyword \"{keyword}\"? Story:");
-    if let Some(title) = &story.title {
-        instructions.push_str(&format!(" title: {title}"));
-    }
-    if let Some(text) = &story.text {
-        instructions.push_str(" text: ");
-        instructions.extend(text.chars().take(STORY_TEXT_MAX_CHARS));
-    }
-    if let Some(url) = &story.url {
-        instructions.push_str(&format!(" url: {url}"));
-    }
+/// 把一批 story 组装成请求 state：`request` 为关键字，`stories` 为本批候选。
+///
+/// 形态对齐 JeV `rankingPayload` 的 state（候选放进 state，问题按下标引用）。
+fn ranking_state(keyword: &str, batch: &[usize], stories: &[Story]) -> serde_json::Value {
+    let candidates: Vec<serde_json::Value> = batch
+        .iter()
+        .map(|&index| {
+            let story = &stories[index];
+            json!({
+                "title": story.title,
+                "text": story.text.as_deref().map(|text| {
+                    text.chars().take(STORY_TEXT_MAX_CHARS).collect::<String>()
+                }),
+                "url": story.url,
+            })
+        })
+        .collect();
 
+    json!({ "request": keyword, "stories": candidates })
+}
+
+/// 把本批中处于 `position` 的候选包成一个 0-3 四级 `score` 问题。
+///
+/// 只引用 `stories[position]`，候选正文留在 state 中，与 JeV 的 ranking 问题一致。
+fn ranking_question(position: usize, index: usize) -> Question {
     Question {
         id: index.to_string(),
-        question_type: QuestionType::Choice,
-        instructions,
-        criteria: Criteria::Choice(vec![
-            ("A".to_string(), Some(json!("yes, the story is relevant"))),
-            (
-                "B".to_string(),
-                Some(json!("no, the story is not relevant")),
-            ),
+        question_type: QuestionType::Score,
+        instructions: format!(
+            "Evaluate ONLY stories[{position}] against request. \
+             Use the supplied description as evidence; do not invent plot details. \
+             How well does this story fit the requested keyword?"
+        ),
+        criteria: Criteria::Score(vec![
+            json!("Contradicts the request OR insufficient evidence of any meaningful match."),
+            json!("Only broadly related; most specific requested qualities are unsupported."),
+            json!("Good match to the main preference; some details are unverified."),
+            json!("Strong evidence for the main requested qualities without a known conflict."),
         ]),
     }
 }
