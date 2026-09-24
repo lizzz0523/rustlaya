@@ -133,19 +133,14 @@ fn candidates(stories: &[Story], keyword: &str, top_k: usize) -> Vec<usize> {
 
         let mut score = 0.0;
         for term in &query {
-            let frequency = *term_frequency.get(term.as_str()).unwrap_or(&0) as f64;
-            if frequency == 0.0 {
+            let tf = *term_frequency.get(term.as_str()).unwrap_or(&0) as f64;
+            if tf == 0.0 {
                 continue;
             }
-            let frequency_in_documents =
-                *document_frequency.get(term.as_str()).unwrap_or(&0) as f64;
-            let inverse_document_frequency = (1.0
-                + (total_count as f64 - frequency_in_documents + 0.5)
-                    / (frequency_in_documents + 0.5))
-                .ln();
-            let denominator =
-                frequency + BM25_K1 * (1.0 - BM25_B + BM25_B * length / average_length);
-            score += inverse_document_frequency * frequency * (BM25_K1 + 1.0) / denominator;
+            let df = *document_frequency.get(term.as_str()).unwrap_or(&0) as f64;
+            let idf = (1.0 + (total_count as f64 - df + 0.5) / (df + 0.5)).ln();
+            let denominator = tf + BM25_K1 * (1.0 - BM25_B + BM25_B * length / average_length);
+            score += idf * tf * (BM25_K1 + 1.0) / denominator;
         }
 
         if score > 0.0 {
